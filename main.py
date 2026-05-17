@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import math
 import os
 from google.cloud import firestore
+from crawler import start_crawling
 
 app = FastAPI()
 
@@ -143,3 +144,17 @@ def post_review(info: ReviewInput):
         return {"status": "success", "message": "評論上傳雲端成功！"}
     except Exception as e:
         return {"status": "error", "message": f"上傳失敗: {str(e)}"}
+@app.get("/api/trigger-crawler")
+def trigger_crawler_and_update_db():
+    try:
+        # 啟動（假）爬蟲
+        new_data = start_crawling() 
+        
+        # 寫入 Firebase
+        for ex in new_data:
+            doc_ref = db.collection('exhibitions').document(ex['title'])
+            doc_ref.set(ex, merge=True)
+            
+        return {"status": "success", "message": f"太棒了！成功爬取並更新 {len(new_data)} 筆展覽資料到資料庫！"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
