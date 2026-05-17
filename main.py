@@ -123,7 +123,9 @@ def submit_review(review: Review):
         return {"status": "error", "message": "資料庫未連線"}
         
     try:
-        doc_ref = db.collection('exhibitions').document(review.title)
+        # 🛡️ 寫入評論時，也一併把名稱裡的半形斜線過濾掉，確保找得到對應的展覽
+        safe_title = review.title.replace('/', '／')
+        doc_ref = db.collection('exhibitions').document(safe_title)
         doc = doc_ref.get()
         
         new_review = {"rating": review.rating, "comment": review.comment}
@@ -137,7 +139,7 @@ def submit_review(review: Review):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# 👇 這是我們用來觸發自動爬蟲的隱藏 API
+# 👇 這是我們用來觸發自動爬蟲的隱藏 API (加入斜線防呆處理)
 @app.get("/api/trigger-crawler")
 def trigger_crawler_and_update_db():
     if db is None:
@@ -149,7 +151,10 @@ def trigger_crawler_and_update_db():
         
         # 寫入 Firebase
         for ex in new_data:
-            doc_ref = db.collection('exhibitions').document(ex['title'])
+            # 🛡️ 終極防呆：把標題裡的半形斜線換成全形，避免 Firebase 誤判為路徑！
+            safe_title = ex['title'].replace('/', '／')
+            
+            doc_ref = db.collection('exhibitions').document(safe_title)
             doc_ref.set(ex, merge=True)
             
         return {"status": "success", "message": f"太棒了！成功爬取並更新 {len(new_data)} 筆展覽資料到資料庫！"}
