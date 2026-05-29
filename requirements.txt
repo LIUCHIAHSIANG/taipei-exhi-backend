@@ -1,5 +1,8 @@
 fastapi
 uvicorn
-pydantic
 google-cloud-firestore
-google-auth
+pydantic
+requests
+beautifulsoup4
+geopy
+urllib3
