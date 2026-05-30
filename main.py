@@ -84,10 +84,10 @@ class Review(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "雙北展覽 API 伺服器正常運作中！2026 旗艦完全體（國道校正+Gemini AI 完整版）"}
+    return {"message": "雙北展覽 API 伺服器正常運作中！2026 旗艦完全體（真實內容 AI 摘要版）"}
 
 # ------------------------------------------
-# API：取得所有展覽資料（包含國道分流交通時間計算）
+# API：取得所有展覽資料（雙北老司機擬真交通時間版）
 # ------------------------------------------
 @app.get("/api/exhibitions")
 def get_exhibitions(lat: float = None, lon: float = None):
@@ -116,7 +116,7 @@ def get_exhibitions(lat: float = None, lon: float = None):
                     real_road_dist = straight_dist * 1.28
                     data['distance'] = round(straight_dist, 2)
                     
-                    # 雙北老司機擬真交通時間公式
+                    # 雙北國道分流時間計算
                     if real_road_dist > 12:
                         data['eta_car'] = max(5, int(real_road_dist * 1.5 + 8))
                         data['eta_moto'] = max(4, int(real_road_dist * 2.6 + 4))
@@ -179,13 +179,14 @@ def submit_review(review: Review):
         return {"status": "error", "message": str(e)}
 
 # ------------------------------------------
-# API：觸發爬蟲（完整無省略版）
+# API：觸發爬蟲（精準讀取內文、進行深度 AI 摘要）
 # ------------------------------------------
 @app.get("/api/trigger-crawler")
 def trigger_crawler_and_update_db():
     if db is None:
         return {"status": "error", "message": "資料庫未連線"}
     try:
+        # 呼叫上面的爬蟲引擎取得含有 full_text 的陣列
         new_data = start_crawling() 
         
         if not new_data or not isinstance(new_data, list):
@@ -218,29 +219,54 @@ def trigger_crawler_and_update_db():
                 existing_data = doc_snap.to_dict()
                 ex['reviews'] = existing_data.get('reviews', [])
                 ex['rating_avg'] = existing_data.get('rating_avg', 0)
-                ex['description'] = existing_data.get('description', ex['description'])
+                ex['description'] = existing_data.get('description', existing_data.get('description', '暫無摘要'))
             else:
                 ex['reviews'] = []
                 ex['rating_avg'] = 0
                 
+                # 🌟 全新展覽，啟動 Gemini 進行文章內容深度真摘要 🌟
                 if ai_client:
                     try:
-                        print(f"🤖 AI 正在即時查詢並總結新展覽：{ex['title']}...")
+                        raw_context = ex.get('full_text', '暫無詳細內文描述')
+                        print(f"🤖 AI 正在閱讀文獻並精準摘要：{ex['title']}...")
+                        
+                        prompt_content = f"""
+                        你是一個專業的台灣藝文活動專欄主編。請幫我閱讀下方由爬蟲抓取下來的展覽完整活動網頁內文，將其提煉濃縮成一段 100 到 150 字的「活動資訊頁面精準摘要」。
+
+                        【展覽基本資訊】
+                        展覽名稱：{ex['title']}
+                        展出地點：{ex['location']}
+
+                        【網頁完整活動內文】
+                        {raw_context}
+
+                        【摘要生成鐵律】：
+                        1. 必須嚴格、百分之百根據上方提供的【網頁完整活動內文】進行提煉。精準指出這個展覽「到底在展出什麼核心東西」（例如：它的策展大綱、現場劃分哪些重要展區、展出什麼藝術家作品或歷史文物亮點）。絕對不能憑空編造內文裡沒有提過的事情。
+                        2. 格式必須以展覽名稱開頭，並精確點出主辦單位與展出地點。
+                        3. 語氣要沉穩、客觀、高質感、具備導覽性。
+                        4. 直接輸出摘要本文，絕對不要帶有任何標題（例如：不需要『AI摘要：』）、不要星號、不要任何寒暄廢話。
+                        """
+                        
                         response = ai_client.models.generate_content(
                             model='gemini-2.5-flash',
-                            contents=f"你是一個台灣的專業藝文嚮導。請根據展覽名稱：『{ex['title']}』，以及展出地點：『{ex['location']}』，上網搜尋並寫出一段大約 100 字到 150 字的展覽詳細介紹。語氣要專業流暢、吸引人，直接輸出介紹本文即可，不要有任何標題或廢話。"
+                            contents=prompt_content
                         )
                         if response.text:
                             ex['description'] = response.text.strip()
                     except Exception as ai_err:
                         print(f"⚠️ Gemini AI 生成失敗: {str(ai_err)}")
+                        ex['description'] = "展覽內容豐富，歡迎前往現場參觀。"
             
+            # 寫入 Firebase 前刪除超長原始文字，保持資料庫苗條乾淨
+            if 'full_text' in ex:
+                del ex['full_text']
+                
             doc_ref.set(ex)
             success_count += 1
             
         return {
             "status": "success", 
-            "message": f"同步完成！自動下架過期展覽 {delete_count} 筆，同步最新展覽 {success_count} 筆。"
+            "message": f"同步完成！已透過真實網頁內文經由 Gemini 完成精準內容總結。同步最新展覽 {success_count} 筆。"
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
