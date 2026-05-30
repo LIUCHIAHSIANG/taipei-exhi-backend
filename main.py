@@ -84,10 +84,10 @@ class Review(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "雙北展覽 API 伺服器正常運作中！2026 旗艦完全體"}
+    return {"message": "雙北展覽 API 伺服器正常運作中！2026 旗艦完全體（國道校正+Gemini AI 完整版）"}
 
 # ------------------------------------------
-# API：取得所有展覽資料（包含前端傳入的距離定位計算 - 台北體感優化版）
+# API：取得所有展覽資料（包含國道分流交通時間計算）
 # ------------------------------------------
 @app.get("/api/exhibitions")
 def get_exhibitions(lat: float = None, lon: float = None):
@@ -113,25 +113,35 @@ def get_exhibitions(lat: float = None, lon: float = None):
                     a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
                     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
                     
-                    # 1. 算出直線距離並校正為實際道路繞路距離 (約 1.25 到 1.3 倍)
+                    # 算出直線距離並校正為實際道路繞路距離 (約 1.28 倍)
                     straight_dist = R * c
                     real_road_dist = straight_dist * 1.28
                     data['distance'] = round(straight_dist, 2)
                     
-                    # 2. 🌟 台北市體感交通時間公式修正
-                    # 開車/騎車：路網繞路加上塞車、等紅綠燈基數
-                    data['eta_car'] = max(5, int(real_road_dist * 2.5 + 5))
+                    # 🌟 雙北老司機擬真交通時間公式 🌟
+                    if real_road_dist > 12:
+                        # 🛣️【遠距離狀況】：汽車走高架國道效率高
+                        data['eta_car'] = max(5, int(real_road_dist * 1.5 + 8))
+                        # 🛵【機車走平面】：不能上國道，越遠紅綠燈越多，開始輸給汽車
+                        data['eta_moto'] = max(4, int(real_road_dist * 2.6 + 4))
+                    else:
+                        # 🚦【近距離/市區狀況】：汽車容易塞車、等車位
+                        data['eta_car'] = max(5, int(real_road_dist * 2.8 + 5))
+                        # 🛵【機車靈活】：平面鑽車縫，近距離機車完勝！
+                        data['eta_moto'] = max(4, int(real_road_dist * 2.0 + 4))
                     
-                    # 大眾運輸：捷運公車繞路，並強制加上「走路、候車、轉乘」的 15 分鐘隱形成本
+                    # 大眾運輸：強制加上「走路、候車、轉乘」的 15 分鐘隱形成本
                     data['eta_transit'] = max(15, int(real_road_dist * 3.5 + 15))
                     
                 except Exception:
                     data['distance'] = 999
                     data['eta_car'] = 999
+                    data['eta_moto'] = 999
                     data['eta_transit'] = 999
             else:
                 data['distance'] = 999
                 data['eta_car'] = 999
+                data['eta_moto'] = 999
                 data['eta_transit'] = 999
             
             reviews = data.get('reviews', [])
@@ -142,7 +152,7 @@ def get_exhibitions(lat: float = None, lon: float = None):
         return {"status": "error", "message": str(e)}
 
 # ------------------------------------------
-# API：提交使用者評論（即時重新計算展覽平均評分）
+# API：提交使用者評論
 # ------------------------------------------
 @app.post("/api/review")
 def submit_review(review: Review):
@@ -171,7 +181,7 @@ def submit_review(review: Review):
             "reviews": reviews,
             "rating_avg": rating_avg
         })
-        return {"status": "success", "message": "評論發表成功，評分已即時重新計算！"}
+        return {"status": "success", "message": "評論發表成功！"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -213,6 +223,7 @@ def trigger_crawler_and_update_db():
             doc_snap = doc_ref.get()
             
             if doc_snap.exists:
+                # 完美繼承歷史評論與之前生過的 AI 簡介
                 existing_data = doc_snap.to_dict()
                 ex['reviews'] = existing_data.get('reviews', [])
                 ex['rating_avg'] = existing_data.get('rating_avg', 0)
@@ -220,25 +231,3 @@ def trigger_crawler_and_update_db():
             else:
                 ex['reviews'] = []
                 ex['rating_avg'] = 0
-                
-                if ai_client:
-                    try:
-                        print(f"🤖 AI 正在即時查詢並總結新展覽：{ex['title']}...")
-                        response = ai_client.models.generate_content(
-                            model='gemini-2.5-flash',
-                            contents=f"你是一個台灣的專業藝文嚮導。請根據展覽名稱：『{ex['title']}』，以及展出地點：『{ex['location']}』，上網搜尋並寫出一段大約 100 字到 150 字的展覽詳細介紹。語氣要專業流暢、吸引人，直接輸出介紹本文即可，不要有任何標題或廢話。"
-                        )
-                        if response.text:
-                            ex['description'] = response.text.strip()
-                    except Exception as ai_err:
-                        print(f"⚠️ Gemini AI 生成失敗: {str(ai_err)}，將保留預設文青罐頭字樣。")
-            
-            doc_ref.set(ex)
-            success_count += 1
-            
-        return {
-            "status": "success", 
-            "message": f"同步完成！自動下架過期展覽 {delete_count} 筆，同步最新展覽 {success_count} 筆（新展覽已全數由 Gemini AI 完成精準簡介生成，並完美保留歷史評論紀錄）。"
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
