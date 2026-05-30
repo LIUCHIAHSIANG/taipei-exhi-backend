@@ -2,6 +2,7 @@ import os
 import json
 import math
 import random
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,8 +13,7 @@ from crawler import start_crawling
 # 🎯 匯入 Google 官方最新的 Gemini API 套件
 from google import genai
 
-# 強制讓 Python 輸出（stdout）相容雲端環境，避免 Big5/UTF-8 編碼衝突
-import sys
+# 強制讓 Python 輸出（stdout）相容雲端環境，避免編碼衝突
 if sys.stdout.encoding != 'utf-8':
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
@@ -58,7 +58,7 @@ if "GEMINI_API_KEY" in os.environ:
     except Exception as e:
         print(f"⚠️ Gemini AI 初始化失敗: {str(e)}")
 else:
-    print(f"⚠️ 未偵測到 GEMINI_API_KEY 環境變數，新展覽將使用預設罐頭簡介。")
+    print(f"⚠️ 未偵測到 GEMINI_API_KEY 環境變數，將使用預設罐頭簡介。")
 
 # ==========================================
 # 3. 初始化 FastAPI 與 允許跨網域 (CORS)
@@ -100,10 +100,9 @@ def get_exhibitions(lat: float = None, lon: float = None):
             data = doc.to_dict()
             data['id'] = doc.id
             
-            # 如果前端有傳入使用者的真實 GPS 座標，即時計算距離與交通時間
             if lat is not None and lon is not None and data.get('lat') is not None and data.get('lon') is not None:
                 try:
-                    R = 6371.0  # 地球半徑公里
+                    R = 6371.0
                     lat1 = math.radians(lat)
                     lon1 = math.radians(lon)
                     lat2 = math.radians(float(data['lat']))
@@ -113,24 +112,18 @@ def get_exhibitions(lat: float = None, lon: float = None):
                     a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
                     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
                     
-                    # 算出直線距離並校正為實際道路繞路距離 (約 1.28 倍)
                     straight_dist = R * c
                     real_road_dist = straight_dist * 1.28
                     data['distance'] = round(straight_dist, 2)
                     
-                    # 🌟 雙北老司機擬真交通時間公式 🌟
+                    # 雙北老司機擬真交通時間公式
                     if real_road_dist > 12:
-                        # 🛣️【遠距離狀況】：汽車走高架國道效率高
                         data['eta_car'] = max(5, int(real_road_dist * 1.5 + 8))
-                        # 🛵【機車走平面】：不能上國道，越遠紅綠燈越多，開始輸給汽車
                         data['eta_moto'] = max(4, int(real_road_dist * 2.6 + 4))
                     else:
-                        # 🚦【近距離/市區狀況】：汽車容易塞車、等車位
                         data['eta_car'] = max(5, int(real_road_dist * 2.8 + 5))
-                        # 🛵【機車靈活】：平面鑽車縫，近距離機車完勝！
                         data['eta_moto'] = max(4, int(real_road_dist * 2.0 + 4))
                     
-                    # 大眾運輸：強制加上「走路、候車、轉乘」的 15 分鐘隱形成本
                     data['eta_transit'] = max(15, int(real_road_dist * 3.5 + 15))
                     
                 except Exception:
@@ -186,7 +179,7 @@ def submit_review(review: Review):
         return {"status": "error", "message": str(e)}
 
 # ------------------------------------------
-# API：觸發爬蟲（精準下架過期、鎖定歷史評論、全新展覽調度 Gemini 生成 AI 簡介）
+# API：觸發爬蟲（完整無省略版）
 # ------------------------------------------
 @app.get("/api/trigger-crawler")
 def trigger_crawler_and_update_db():
@@ -215,7 +208,6 @@ def trigger_crawler_and_update_db():
                 batch.delete(doc)
                 delete_count += 1
         batch.commit()
-        print(f"🧹 歷史倉庫整理完畢，已自動下架過期展覽 {delete_count} 筆。")
 
         success_count = 0
         for safe_title, ex in new_data_dict.items():
@@ -223,7 +215,6 @@ def trigger_crawler_and_update_db():
             doc_snap = doc_ref.get()
             
             if doc_snap.exists:
-                # 完美繼承歷史評論與之前生過的 AI 簡介
                 existing_data = doc_snap.to_dict()
                 ex['reviews'] = existing_data.get('reviews', [])
                 ex['rating_avg'] = existing_data.get('rating_avg', 0)
@@ -231,3 +222,25 @@ def trigger_crawler_and_update_db():
             else:
                 ex['reviews'] = []
                 ex['rating_avg'] = 0
+                
+                if ai_client:
+                    try:
+                        print(f"🤖 AI 正在即時查詢並總結新展覽：{ex['title']}...")
+                        response = ai_client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=f"你是一個台灣的專業藝文嚮導。請根據展覽名稱：『{ex['title']}』，以及展出地點：『{ex['location']}』，上網搜尋並寫出一段大約 100 字到 150 字的展覽詳細介紹。語氣要專業流暢、吸引人，直接輸出介紹本文即可，不要有任何標題或廢話。"
+                        )
+                        if response.text:
+                            ex['description'] = response.text.strip()
+                    except Exception as ai_err:
+                        print(f"⚠️ Gemini AI 生成失敗: {str(ai_err)}")
+            
+            doc_ref.set(ex)
+            success_count += 1
+            
+        return {
+            "status": "success", 
+            "message": f"同步完成！自動下架過期展覽 {delete_count} 筆，同步最新展覽 {success_count} 筆。"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
