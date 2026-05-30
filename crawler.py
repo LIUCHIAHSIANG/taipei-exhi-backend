@@ -67,7 +67,7 @@ def parse_date_string(date_str):
     try: return datetime.strptime(date_str, "%Y-%m-%d").date()
     except: return None
 
-# 【目標三】直接寫死經緯度，不再依賴外部 API
+# 【目標三】寫死經緯度
 def get_coordinates(location):
     preset_locations = {
         "台北南港展覽館1館": (25.05696, 121.6167), "華山1914文化創意園區": (25.04416, 121.5294),
@@ -81,7 +81,7 @@ def get_coordinates(location):
     }
     return preset_locations.get(location, (25.04416, 121.5294))
 
-# 【目標三】根據來源網站或標題，自動賦予場館名稱
+# 【目標三】自動賦予場館名稱
 def get_location(title, url):
     url_lower = url.lower()
     if "tainex" in url_lower or "南港" in title: return "台北南港展覽館1館"
@@ -107,8 +107,9 @@ def valid_exhibition(name):
     keywords = ["展", "特展", "《", "》", "：", "－", "季", "藝術", "博覽會", "節", "大展", "聯展"]
     return any(x in name for x in keywords)
 
+# 🚀 這裡包含了全新的 2026 年（民國115年）歷史年份過濾防線
 def scrape(url):
-    print(f"📡 Fetching URL: {url}") # 使用全英文避免 Render 噴出編碼錯誤
+    print(f"📡 Fetching URL: {url}")
     data = []
     try:
         response = requests.get(url, headers=HEADERS, timeout=10, verify=False)
@@ -119,15 +120,29 @@ def scrape(url):
         print(f"❌ Connection Error: {str(e)}")
         return []
 
+    # 設定今年（2026年 / 民國115年）作為天花板基準線
     today = datetime.today().date()
+    current_year_ad = 2026
+    current_year_roc = 115
 
     for title in titles:
         raw_name = title.text.strip()
         if not valid_exhibition(raw_name): continue
         
+        # 🛑【新增歷史年份攔截器】：打擊像「112年成果展」這種殭屍資料
+        # 檢查西元過去年 (如 2020 ~ 2025)
+        ad_years = [int(y) for y in re.findall(r'(20\d{2})', raw_name)]
+        if ad_years and all(y < current_year_ad for y in ad_years):
+            continue  
+            
+        # 檢查民國過去年 (如 110 ~ 114)
+        roc_years = [int(y) for y in re.findall(r'(1\d{2})[年\s]', raw_name)]
+        if roc_years and all(y < current_year_roc for y in roc_years):
+            continue  
+
+        # 檢查年月日過期
         start_date, end_date = get_dates(raw_name)
         
-        # 【目標一】日期過濾：若結束日期早於今天，直接略過 (無聲略過，防止 print 中文導致雲端崩潰)
         if end_date:
             end_dt = parse_date_string(end_date)
             if end_dt and end_dt < today:
@@ -147,11 +162,9 @@ def scrape(url):
         if len(clean_name) < 3: 
             continue
 
-        # 觸發目標三：自動取得場館名稱與精準經緯度
         location = get_location(clean_name, url)
         lat, lon = get_coordinates(location)
         
-        # 抓取圖片
         img_url = ""
         parent = title.parent
         for _ in range(3):
@@ -162,7 +175,7 @@ def scrape(url):
                     break
                 parent = parent.parent
 
-        # 【目標二】展覽分類機制
+        # 【目標二】自動分類
         category = "綜合"
         if any(kw in clean_name for kw in ["畫", "藝術", "故宮", "設計", "文物", "歷史", "攝影", "雕刻"]): 
             category = "藝文歷史"
@@ -171,7 +184,6 @@ def scrape(url):
         elif any(kw in clean_name for kw in ["動漫", "玩具", "市集", "IP", "卡通", "遊戲"]): 
             category = "娛樂動漫"
 
-        # 描述設定
         ex_description = f"歡迎蒞臨「{location}」親身體驗【{clean_name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索！"
 
         data.append({
@@ -190,7 +202,7 @@ def scrape(url):
             "eta_car": random.randint(12, 35),
             "eta_moto": random.randint(8, 20),
             "eta_transit": random.randint(15, 45),
-            "rating_avg": round(random.uniform(4.0, 5.0), 1),
+            "rating_avg": 0,
             "reviews": []
         })
 
@@ -202,7 +214,6 @@ def start_crawling():
     for url in URLS:
         all_data.extend(scrape(url))
         
-    # 去除重複展覽
     unique = []
     seen = set()
     for item in all_data:
