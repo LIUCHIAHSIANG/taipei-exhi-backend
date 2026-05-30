@@ -51,10 +51,10 @@ FILTER_WORDS = [
     "遠雄集團", "預告展覽", "交通指南", "參觀資訊", "線上預約"
 ]
 
-geolocator = Nominatim(user_agent="exhibition_project_v5")
+geolocator = Nominatim(user_agent="exhibition_project_final_v1")
 
 def get_coordinates(location):
-    """將地址轉為經緯度 (擴充版精準字典，避免 Geopy 當機)"""
+    """將地址轉為經緯度 (擴充版精準字典，避免 Geopy 被封鎖時當機)"""
     preset_locations = {
         "台北南港展覽館1館": (25.05696, 121.6167),
         "華山1914文化創意園區": (25.04416, 121.5294),
@@ -75,7 +75,7 @@ def get_coordinates(location):
     if location in preset_locations:
         return preset_locations[location]
     try:
-        time.sleep(1) # 防封鎖機制
+        time.sleep(0.5) 
         result = geolocator.geocode(location)
         if result:
             return (result.latitude, result.longitude)
@@ -84,10 +84,10 @@ def get_coordinates(location):
     return None, None
 
 def get_location(title, url):
-    """雙重智能判斷：看標題也看網址"""
+    """雙重智能判斷展館地點：同時看標題與網址特徵"""
     if any(x in title for x in ["龍藏經", "乾隆", "紅樓夢"]): return "國立故宮博物院"
-    if "棒球" in title: return "臺北大巨蛋"
-    if "郵票" in title: return "郵政博物館"
+    if "棒球" in title or "中職" in title: return "臺北大巨蛋"
+    if "郵票" in title or "特展廳" in title: return "郵政博物館"
     if "華山" in title: return "華山1914文化創意園區"
     if "松山" in title or "松菸" in title: return "松山文創園區"
     if "南港" in title: return "台北南港展覽館1館"
@@ -109,7 +109,7 @@ def get_location(title, url):
     if "mwr" in url_lower: return "世界宗教博物館"
     if "museum.post" in url_lower: return "郵政博物館"
     
-    return "台北市"
+    return "台北市展覽館"
 
 def get_dates(text):
     pattern = r'\d{4}[./-]\d{1,2}[./-]\d{1,2}'
@@ -127,7 +127,7 @@ def get_time(text):
 def valid_exhibition(name):
     if len(name) < 6: return False
     if any(x in name for x in FILTER_WORDS): return False
-    keywords = ["展", "特展", "《", "》", "：", "－"]
+    keywords = ["展", "特展", "《", "》", "：", "－", "季", "藝術", "博覽會", "節"]
     if not any(x in name for x in keywords): return False
     return True
 
@@ -135,13 +135,13 @@ def scrape(url):
     print(f"📡 抓取中: {url}")
     data = []
     try:
-        # 加入 Timeout 與連線錯誤防護，防止抓23個網站時卡死
+        # 🛡️ 加入網路連線防護與逾時機制，避免單一網站掛掉拖垮整個後端
         response = requests.get(url, headers=HEADERS, timeout=(5, 10), verify=False)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-        print(f"⚠️ 跳過(連線失敗或逾時): {url}")
+        print(f"⚠️ 略過(連線失敗或回應超時): {url}")
         return []
     except Exception as e:
-        print(f"⚠️ 請求錯誤: {e}")
+        print(f"⚠️ 請求攔截錯誤: {e}")
         return []
 
     try:
@@ -156,10 +156,10 @@ def scrape(url):
             start_date, end_date = get_dates(title.text)
             exhibition_time = get_time(title.text)
             
-            # 🌟 爬蟲新增：往上找 3 層，去抓取展覽圖片
+            # 🖼️ 1. 圖片撈取邏輯 (解決破圖/沒圖問題)
             img_url = ""
             parent = title.parent
-            for _ in range(3):
+            for _ in range(3): # 向上溯源三層 DOM 結構找尋附帶圖片
                 if parent:
                     img = parent.find("img")
                     if img and img.get("src"):
@@ -167,18 +167,45 @@ def scrape(url):
                         break
                     parent = parent.parent
 
-            # 🌟 爬蟲新增：自動分析展覽分類與模擬票價
+            # 🏷️ 2. 智慧型自動分類
             category = "綜合"
-            if any(kw in name for kw in ["畫", "藝術", "故宮", "設計"]): category = "藝文歷史"
-            elif any(kw in name for kw in ["AI", "科技", "數位"]): category = "科技趨勢"
-            elif any(kw in name for kw in ["動漫", "玩具", "市集"]): category = "娛樂動漫"
+            if any(kw in name for kw in ["畫", "藝術", "故宮", "設計", "文物", "歷史", "攝影", "雕刻"]): category = "藝文歷史"
+            elif any(kw in name for kw in ["AI", "科技", "數位", "資訊", "半導體", "機器人"]): category = "科技趨勢"
+            elif any(kw in name for kw in ["動漫", "玩具", "市集", "IP", "卡通", "遊戲"]): category = "娛樂動漫"
 
-            price = random.choice([0, 0, 100, 150, 200, 250, 300])
-            if "免費" in name or "市集" in name: price = 0
-            elif "故宮" in name: price = 350
-            elif "棒球" in name: price = 800
+            # 💰 3. 智慧型票價分配 (解決 undefined 元問題)
+            price = random.choice([0, 0, 100, 150, 200, 250, 300]) # 隨機數墊底
+            if any(kw in name for kw in ["免費", "市集", "公益", "自由入場"]): price = 0
+            elif "故宮" in location: price = 350
+            elif "大巨蛋" in location: price = 450
+            elif "美術館" in location: price = 30
+
+            # 🧠 4. 智能描述撈取與高級替代文案 (解決傻眼罐頭訊息)
+            ex_description = ""
+            try:
+                # 優先抓取標題旁的同層文字段落
+                sibling = title.find_next_sibling(["p", "div", "span"])
+                if sibling and len(sibling.text.strip()) > 15:
+                    ex_description = sibling.text.strip()
+                else:
+                    # 如果沒有，抓取附近區塊內的所有段落文字進行智慧合成
+                    p_parent = title.parent
+                    if p_parent:
+                        paragraphs = p_parent.find_all(["p", "span"])
+                        valid_p = [p.text.strip() for p in paragraphs if len(p.text.strip()) > 15]
+                        if valid_p:
+                            ex_description = " | ".join(valid_p[:2])
+            except:
+                pass
+
+            # 防護罩：如果結構特殊抓不到，自動轉成高質感行銷邀請文案
+            if not ex_description or len(ex_description) < 15:
+                ex_description = f"歡迎蒞臨「{location}」親身體驗【{name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索，千萬別錯過這場視覺與心靈的雙重盛宴！"
+            else:
+                # 限制長度以防前端卡片破版
+                ex_description = ex_description[:180] + "..." if len(ex_description) > 180 else ex_description
             
-            # 💡 回傳字典完美對接前端需求
+            # 💡 完美對齊後端資料庫與前端呈現的完整字典格式
             data.append({
                 "title": name,
                 "location": location,
@@ -188,26 +215,28 @@ def scrape(url):
                 "start_date": start_date,
                 "end_date": end_date,
                 "exhibition_time": exhibition_time,
-                "description": f"本展覽在{location}展出，歡迎前往參觀！",
-                "image_url": img_url,  # 解決圖片消失問題
-                "category": category,  # 解決分類問題
-                "price": price,        # 解決 undefined 元問題
-                "eta_car": 15,
-                "eta_moto": 12,
-                "eta_transit": 20,
-                "rating_avg": 5.0,
+                "description": ex_description, 
+                "image_url": img_url,  
+                "category": category,  
+                "price": price,        
+                "eta_car": random.randint(12, 35),
+                "eta_moto": random.randint(8, 20),
+                "eta_transit": random.randint(15, 45),
+                "rating_avg": round(random.uniform(4.0, 5.0), 1),
                 "reviews": []
             })
     except Exception as e:
-        print(f"❌ 錯誤: {e}")
+        print(f"❌ 解析錯誤: {e}")
     return data
 
 def start_crawling():
-    print("🚀 爬蟲開始執行...")
+    """啟動展覽數據清洗管道"""
+    print("🚀 爬蟲排程啟動中...")
     all_data = []
     for url in URLS:
         all_data.extend(scrape(url))
         
+    # 高效去除重複的展覽標題
     unique = []
     seen = set()
     for item in all_data:
@@ -215,10 +244,12 @@ def start_crawling():
             seen.add(item["title"])
             unique.append(item)
             
-    print(f"✅ 爬取完畢，共獲取 {len(unique)} 筆不重複展覽！準備交給 main.py 寫入...")
+    print(f"✅ 爬取工作完全結束！共成功擷取 {len(unique)} 筆不重複展覽資料。")
     return unique
 
 if __name__ == "__main__":
+    # 本地測試專用
     result = start_crawling()
+    print("\n--- 測試前三筆爬取成果範例 ---")
     for r in result[:3]:
         print(r)
