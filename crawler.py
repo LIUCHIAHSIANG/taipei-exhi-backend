@@ -6,7 +6,7 @@ import re
 import time
 import random
 from urllib.parse import urljoin
-from datetime import datetime  # 🌟 新增：用於時間比對，過濾舊展覽
+from datetime import datetime
 
 # 忽略不安全的 SSL 連線警告
 urllib3.disable_warnings()
@@ -52,51 +52,55 @@ FILTER_WORDS = [
     "遠雄集團", "預告展覽", "交通指南", "參觀資訊", "線上預約"
 ]
 
-geolocator = Nominatim(user_agent="exhibition_project_final_v2")
+geolocator = Nominatim(user_agent="exhibition_cleaner_v3")
+
+def get_dates(text):
+    """🌟 超強效日期萃取：支援西元、民國、任意空格與符號，並將結果標準化為 YYYY-MM-DD"""
+    # 匹配包含 4碼西元 或 2-3碼民國 的年月日結構 (容忍中間有任意空格與符號)
+    pattern = r'(\d{2,4})\s*[\s./\-年]\s*(\d{1,2})\s*[\s./\-月]\s*(\d{1,2})\s*日?'
+    matches = re.findall(pattern, text)
+    
+    cleaned_dates = []
+    for y, m, d in matches:
+        year = int(y)
+        if year < 200:  # 自動將民國年轉為西元年
+            year += 1911
+        cleaned_dates.append(f"{year}-{int(m):02d}-{int(d):02d}")
+        
+    if len(cleaned_dates) >= 2:
+        return cleaned_dates[0], cleaned_dates[1]
+    elif len(cleaned_dates) == 1:
+        return cleaned_dates[0], None
+    return None, None
 
 def parse_date_string(date_str):
-    """🌟 新增：將各種網頁常見的日期格式安全轉為 date 物件，方便比對"""
     if not date_str:
         return None
-    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(date_str.strip(), fmt).date()
-        except ValueError:
-            continue
-    return None
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except:
+        return None
 
 def get_coordinates(location):
-    """將地址轉為經緯度 (擴充版精準字典，避免 Geopy 被封鎖時當機)"""
     preset_locations = {
-        "台北南港展覽館1館": (25.05696, 121.6167),
-        "華山1914文化創意園區": (25.04416, 121.5294),
-        "松山文創園區": (25.04375, 121.5606),
-        "國立故宮博物院": (25.10231, 121.5485),
-        "臺北市立美術館": (25.0725, 121.5248),
-        "國立臺灣科學教育館": (25.0958, 121.5165),
-        "國立中正紀念堂": (25.0347, 121.5218),
-        "臺北當代工藝設計分館": (25.0325, 121.5126),
-        "臺北大巨蛋": (25.0416, 121.5582),
-        "國家人權博物館": (24.9856, 121.5317),
-        "師大美術館": (25.0271, 121.5284),
-        "北師美術館": (25.0243, 121.5435),
-        "關渡美術館": (25.1326, 121.4697),
-        "世界宗教博物館": (25.0084, 121.5054),
+        "台北南港展覽館1館": (25.05696, 121.6167), "華山1914文化創意園區": (25.04416, 121.5294),
+        "松山文創園區": (25.04375, 121.5606), "國立故宮博物院": (25.10231, 121.5485),
+        "臺北市立美術館": (25.0725, 121.5248), "國立臺灣科學教育館": (25.0958, 121.5165),
+        "國立中正紀念堂": (25.0347, 121.5218), "臺北當代工藝設計分館": (25.0325, 121.5126),
+        "臺北大巨蛋": (25.0416, 121.5582), "國家人權博物館": (24.9856, 121.5317),
+        "師大美術館": (25.0271, 121.5284), "北師美術館": (25.0243, 121.5435),
+        "關渡美術館": (25.1326, 121.4697), "世界宗教博物館": (25.0084, 121.5054),
         "郵政博物館": (25.0315, 121.5146)
     }
-    if location in preset_locations:
-        return preset_locations[location]
+    if location in preset_locations: return preset_locations[location]
     try:
-        time.sleep(0.5) 
+        time.sleep(0.3)
         result = geolocator.geocode(location)
-        if result:
-            return (result.latitude, result.longitude)
-    except:
-        pass
+        if result: return (result.latitude, result.longitude)
+    except: pass
     return None, None
 
 def get_location(title, url):
-    """雙重智能判斷展館地點"""
     if any(x in title for x in ["龍藏經", "乾隆", "紅樓夢"]): return "國立故宮博物院"
     if "棒球" in title or "中職" in title: return "臺北大巨蛋"
     if "郵票" in title or "特展廳" in title: return "郵政博物館"
@@ -120,26 +124,12 @@ def get_location(title, url):
     if "kdmofa.tnua" in url_lower: return "關渡美術館"
     if "mwr" in url_lower: return "世界宗教博物館"
     if "museum.post" in url_lower: return "郵政博物館"
-    
     return "台北市展覽館"
 
-def get_dates(text):
-    pattern = r'\d{4}[./-]\d{1,2}[./-]\d{1,2}'
-    dates = re.findall(pattern, text)
-    if len(dates) >= 2: return dates[0], dates[1]
-    elif len(dates) == 1: return dates[0], None
-    return None, None
-
-def get_time(text):
-    pattern = r'\d{1,2}:\d{2}\s*[-~]\s*\d{1,2}:\d{2}'
-    result = re.search(pattern, text)
-    if result: return result.group()
-    return None
-
 def valid_exhibition(name):
-    if len(name) < 6: return False
+    if len(name) < 4: return False
     if any(x in name for x in FILTER_WORDS): return False
-    keywords = ["展", "特展", "《", "》", "：", "－", "季", "藝術", "博覽會", "節"]
+    keywords = ["展", "特展", "《", "》", "：", "－", "季", "藝術", "博覽會", "節", "大展", "聯展"]
     if not any(x in name for x in keywords): return False
     return True
 
@@ -148,37 +138,52 @@ def scrape(url):
     data = []
     try:
         response = requests.get(url, headers=HEADERS, timeout=(5, 10), verify=False)
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-        print(f"⚠️ 略過(連線失敗或回應超時): {url}")
-        return []
-    except Exception as e:
-        print(f"⚠️ 請求攔截錯誤: {e}")
+    except:
         return []
 
     try:
         soup = BeautifulSoup(response.text, "html.parser")
         titles = soup.find_all(["h1", "h2", "h3", "a"])
         for title in titles:
-            name = title.text.strip()
-            if not valid_exhibition(name): continue
+            raw_name = title.text.strip()
+            if not valid_exhibition(raw_name): continue
             
-            start_date, end_date = get_dates(title.text)
+            # 先行提取日期資訊
+            start_date, end_date = get_dates(raw_name)
             
-            # 🌟 核心過濾邏輯：如果抓得到結束日期，且結束日期早於今天，就直接踢掉！
+            # 🛑 核心修改一：【精準過期篩選機制】
+            today = datetime.today().date()
             if end_date:
                 end_dt = parse_date_string(end_date)
-                if end_dt and end_dt < datetime.today().date():
-                    print(f"⏭️  [已過期自動過濾] 跳過展覽: {name} (結束於 {end_date})")
+                if end_dt and end_dt < today:
+                    print(f"⏭️  [已過期自動過濾] 跳過展覽: {raw_name}")
                     continue
+            if start_date:
+                start_dt = parse_date_string(start_date)
+                # 如果開展日超過一年且沒有結束日，判定為陳舊過期資訊
+                if start_dt and not end_date and (today - start_dt).days > 365:
+                    print(f"⏭️  [年代久遠過濾] 跳過展覽: {raw_name}")
+                    continue
+
+            # 🛑 核心修改二：【標題脫水機制，把日期從標題中剔除】
+            clean_name = raw_name
+            # 移除完整年月日格式
+            clean_name = re.sub(r'\d{2,4}\s*[\s./\-年]\s*\d{1,2}\s*[\s./\-月]\s*\d{1,2}\s*日?', '', clean_name)
+            # 移除殘留的短月日格式 (例如 12/25 或 02.14)
+            clean_name = re.sub(r'\d{1,2}\s*[\s./\-]\s*\d{1,2}', '', clean_name)
+            # 移除前後及中間多餘的橫線、波浪號、括號與殘留空格
+            clean_name = re.sub(r'[\s~至\-－—～：:\(\)（）\[\]【】\/]+', ' ', clean_name).strip()
             
-            location = get_location(name, url)
+            if len(clean_name) < 3: # 如果切完發現只剩符號或太空，就跳過
+                continue
+
+            location = get_location(clean_name, url)
             lat, lon = get_coordinates(location)
-            exhibition_time = get_time(title.text)
             
-            # 🖼️ 1. 圖片撈取邏輯 
+            # 🖼️ 圖片撈取
             img_url = ""
             parent = title.parent
-            for _ in range(3): 
+            for _ in range(3):
                 if parent:
                     img = parent.find("img")
                     if img and img.get("src"):
@@ -186,20 +191,20 @@ def scrape(url):
                         break
                     parent = parent.parent
 
-            # 🏷️ 2. 智慧型自動分類
+            # 🏷️ 自動分類
             category = "綜合"
-            if any(kw in name for kw in ["畫", "藝術", "故宮", "設計", "文物", "歷史", "攝影", "雕刻"]): category = "藝文歷史"
-            elif any(kw in name for kw in ["AI", "科技", "數位", "資訊", "半導體", "機器人"]): category = "科技趨勢"
-            elif any(kw in name for kw in ["動漫", "玩具", "市集", "IP", "卡通", "遊戲"]): category = "娛樂動漫"
+            if any(kw in clean_name for kw in ["畫", "藝術", "故宮", "設計", "文物", "歷史", "攝影", "雕刻"]): category = "藝文歷史"
+            elif any(kw in clean_name for kw in ["AI", "科技", "數位", "資訊", "半導體", "機器人"]): category = "科技趨勢"
+            elif any(kw in clean_name for kw in ["動漫", "玩具", "市集", "IP", "卡通", "遊戲"]): category = "娛樂動漫"
 
-            # 💰 3. 智慧型票價分配
-            price = random.choice([0, 0, 100, 150, 200, 250, 300]) 
-            if any(kw in name for kw in ["免費", "市集", "公益", "自由入場"]): price = 0
+            # 💰 票價分配
+            price = random.choice([0, 0, 100, 150, 200, 250, 300])
+            if any(kw in clean_name for kw in ["免費", "市集", "公益", "自由入場"]): price = 0
             elif "故宮" in location: price = 350
             elif "大巨蛋" in location: price = 450
             elif "美術館" in location: price = 30
 
-            # 🧠 4. 智能描述撈取與高級替代文案
+            # 🧠 智能描述
             ex_description = ""
             try:
                 sibling = title.find_next_sibling(["p", "div", "span"])
@@ -210,25 +215,23 @@ def scrape(url):
                     if p_parent:
                         paragraphs = p_parent.find_all(["p", "span"])
                         valid_p = [p.text.strip() for p in paragraphs if len(p.text.strip()) > 15]
-                        if valid_p:
-                            ex_description = " | ".join(valid_p[:2])
-            except:
-                pass
+                        if valid_p: ex_description = " | ".join(valid_p[:2])
+            except: pass
 
             if not ex_description or len(ex_description) < 15:
-                ex_description = f"歡迎蒞臨「{location}」親身體驗【{name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索，千萬別錯過這場視覺與心靈的雙重盛宴！"
+                ex_description = f"歡迎蒞臨「{location}」親身體驗【{clean_name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索！"
             else:
                 ex_description = ex_description[:180] + "..." if len(ex_description) > 180 else ex_description
             
             data.append({
-                "title": name,
+                "title": clean_name, # ✨ 現在是超乾淨的純標題了！
                 "location": location,
                 "address": location,
                 "lat": lat,
                 "lon": lon,
-                "start_date": start_date,
-                "end_date": end_date,
-                "exhibition_time": exhibition_time,
+                "start_date": start_date, # ✨ 日期乖乖待在獨立欄位
+                "end_date": end_date,     # ✨ 日期乖乖待在獨立欄位
+                "exhibition_time": "09:00 ~ 18:00",
                 "description": ex_description, 
                 "image_url": img_url,  
                 "category": category,  
@@ -256,11 +259,8 @@ def start_crawling():
             seen.add(item["title"])
             unique.append(item)
             
-    print(f"✅ 爬取工作完全結束！共成功擷取 {len(unique)} 筆【未過期】的展覽資料。")
+    print(f"✅ 爬取完全結束！成功獲取 {len(unique)} 筆乾淨、未過期的展覽。")
     return unique
 
 if __name__ == "__main__":
     result = start_crawling()
-    print("\n--- 測試前三筆爬取成果範例 ---")
-    for r in result[:3]:
-        print(r)
