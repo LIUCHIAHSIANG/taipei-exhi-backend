@@ -1,6 +1,6 @@
 fastapi
 uvicorn
 google-cloud-firestore
+google-genai
 requests
 beautifulsoup4
-google-genai
