@@ -6,6 +6,7 @@ import re
 import time
 import random
 from urllib.parse import urljoin
+from datetime import datetime  # 🌟 新增：用於時間比對，過濾舊展覽
 
 # 忽略不安全的 SSL 連線警告
 urllib3.disable_warnings()
@@ -51,7 +52,18 @@ FILTER_WORDS = [
     "遠雄集團", "預告展覽", "交通指南", "參觀資訊", "線上預約"
 ]
 
-geolocator = Nominatim(user_agent="exhibition_project_final_v1")
+geolocator = Nominatim(user_agent="exhibition_project_final_v2")
+
+def parse_date_string(date_str):
+    """🌟 新增：將各種網頁常見的日期格式安全轉為 date 物件，方便比對"""
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
 
 def get_coordinates(location):
     """將地址轉為經緯度 (擴充版精準字典，避免 Geopy 被封鎖時當機)"""
@@ -84,7 +96,7 @@ def get_coordinates(location):
     return None, None
 
 def get_location(title, url):
-    """雙重智能判斷展館地點：同時看標題與網址特徵"""
+    """雙重智能判斷展館地點"""
     if any(x in title for x in ["龍藏經", "乾隆", "紅樓夢"]): return "國立故宮博物院"
     if "棒球" in title or "中職" in title: return "臺北大巨蛋"
     if "郵票" in title or "特展廳" in title: return "郵政博物館"
@@ -135,7 +147,6 @@ def scrape(url):
     print(f"📡 抓取中: {url}")
     data = []
     try:
-        # 🛡️ 加入網路連線防護與逾時機制，避免單一網站掛掉拖垮整個後端
         response = requests.get(url, headers=HEADERS, timeout=(5, 10), verify=False)
     except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
         print(f"⚠️ 略過(連線失敗或回應超時): {url}")
@@ -151,15 +162,23 @@ def scrape(url):
             name = title.text.strip()
             if not valid_exhibition(name): continue
             
+            start_date, end_date = get_dates(title.text)
+            
+            # 🌟 核心過濾邏輯：如果抓得到結束日期，且結束日期早於今天，就直接踢掉！
+            if end_date:
+                end_dt = parse_date_string(end_date)
+                if end_dt and end_dt < datetime.today().date():
+                    print(f"⏭️  [已過期自動過濾] 跳過展覽: {name} (結束於 {end_date})")
+                    continue
+            
             location = get_location(name, url)
             lat, lon = get_coordinates(location)
-            start_date, end_date = get_dates(title.text)
             exhibition_time = get_time(title.text)
             
-            # 🖼️ 1. 圖片撈取邏輯 (解決破圖/沒圖問題)
+            # 🖼️ 1. 圖片撈取邏輯 
             img_url = ""
             parent = title.parent
-            for _ in range(3): # 向上溯源三層 DOM 結構找尋附帶圖片
+            for _ in range(3): 
                 if parent:
                     img = parent.find("img")
                     if img and img.get("src"):
@@ -173,22 +192,20 @@ def scrape(url):
             elif any(kw in name for kw in ["AI", "科技", "數位", "資訊", "半導體", "機器人"]): category = "科技趨勢"
             elif any(kw in name for kw in ["動漫", "玩具", "市集", "IP", "卡通", "遊戲"]): category = "娛樂動漫"
 
-            # 💰 3. 智慧型票價分配 (解決 undefined 元問題)
-            price = random.choice([0, 0, 100, 150, 200, 250, 300]) # 隨機數墊底
+            # 💰 3. 智慧型票價分配
+            price = random.choice([0, 0, 100, 150, 200, 250, 300]) 
             if any(kw in name for kw in ["免費", "市集", "公益", "自由入場"]): price = 0
             elif "故宮" in location: price = 350
             elif "大巨蛋" in location: price = 450
             elif "美術館" in location: price = 30
 
-            # 🧠 4. 智能描述撈取與高級替代文案 (解決傻眼罐頭訊息)
+            # 🧠 4. 智能描述撈取與高級替代文案
             ex_description = ""
             try:
-                # 優先抓取標題旁的同層文字段落
                 sibling = title.find_next_sibling(["p", "div", "span"])
                 if sibling and len(sibling.text.strip()) > 15:
                     ex_description = sibling.text.strip()
                 else:
-                    # 如果沒有，抓取附近區塊內的所有段落文字進行智慧合成
                     p_parent = title.parent
                     if p_parent:
                         paragraphs = p_parent.find_all(["p", "span"])
@@ -198,14 +215,11 @@ def scrape(url):
             except:
                 pass
 
-            # 防護罩：如果結構特殊抓不到，自動轉成高質感行銷邀請文案
             if not ex_description or len(ex_description) < 15:
                 ex_description = f"歡迎蒞臨「{location}」親身體驗【{name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索，千萬別錯過這場視覺與心靈的雙重盛宴！"
             else:
-                # 限制長度以防前端卡片破版
                 ex_description = ex_description[:180] + "..." if len(ex_description) > 180 else ex_description
             
-            # 💡 完美對齊後端資料庫與前端呈現的完整字典格式
             data.append({
                 "title": name,
                 "location": location,
@@ -230,13 +244,11 @@ def scrape(url):
     return data
 
 def start_crawling():
-    """啟動展覽數據清洗管道"""
     print("🚀 爬蟲排程啟動中...")
     all_data = []
     for url in URLS:
         all_data.extend(scrape(url))
         
-    # 高效去除重複的展覽標題
     unique = []
     seen = set()
     for item in all_data:
@@ -244,11 +256,10 @@ def start_crawling():
             seen.add(item["title"])
             unique.append(item)
             
-    print(f"✅ 爬取工作完全結束！共成功擷取 {len(unique)} 筆不重複展覽資料。")
+    print(f"✅ 爬取工作完全結束！共成功擷取 {len(unique)} 筆【未過期】的展覽資料。")
     return unique
 
 if __name__ == "__main__":
-    # 本地測試專用
     result = start_crawling()
     print("\n--- 測試前三筆爬取成果範例 ---")
     for r in result[:3]:
