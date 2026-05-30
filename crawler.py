@@ -157,7 +157,7 @@ def scrape(url):
         lat, lon = get_coordinates(location)
         
         img_url = ""
-        full_text = "" # 🌟 新增：裝載 AI 摘要原料
+        full_text = ""
         
         parent = title.parent
         for _ in range(3):
@@ -168,12 +168,19 @@ def scrape(url):
                     if img and img.get("src"):
                         img_url = urljoin(url, img.get("src"))
                 
-                # 抓內文 (往外層找 p 標籤或 div 內的純文字)
+                # 🌟 擴大抓取範圍：將節點下的 p, div, span 內文字做深度地毯式搜索
                 if not full_text:
-                    paragraphs = parent.find_all("p")
-                    text_chunks = [p.text.strip() for p in paragraphs if len(p.text.strip()) > 5]
+                    text_elements = parent.find_all(["p", "div", "span"])
+                    text_chunks = []
+                    for el in text_elements:
+                        if not el.find(["p", "div"]):  # 只抓最底層文字，避免重複疊加
+                            txt = el.text.strip()
+                            if txt and len(txt) > 6 and not any(fw in txt for fw in FILTER_WORDS):
+                                text_chunks.append(txt)
                     if text_chunks:
-                        full_text = " ".join(text_chunks)
+                        seen_chunks = set()
+                        unique_chunks = [x for x in text_chunks if not (x in seen_chunks or seen_chunks.add(x))]
+                        full_text = " ".join(unique_chunks)
                 
                 parent = parent.parent
 
@@ -186,6 +193,13 @@ def scrape(url):
             category = "娛樂動漫"
 
         ex_description = f"歡迎蒞臨「{location}」親身體驗【{clean_name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索！"
+
+        # 🌟 終極修正核心：如果網站上真的沒有多餘文字，不要再給沒養分的罐頭簡介了！
+        # 塞入有意義的「結構化導引線索」，明確指令 Gemini 動用內建大腦直接擴充知識
+        if not full_text or len(full_text.strip()) <= 15:
+            final_full_text = f"本展覽為在『{location}』舉辦的『{category}』類型活動，主題聚焦於『{clean_name}』。請主編直接調動你強大的藝文知識庫與最新資料，針對這個展覽主題及其相關背景，直接撰寫一篇高質感的展覽核心亮點與策展大綱摘要導覽。"
+        else:
+            final_full_text = full_text
 
         data.append({
             "title": clean_name, 
@@ -205,7 +219,7 @@ def scrape(url):
             "eta_transit": random.randint(15, 45),
             "rating_avg": 0,
             "reviews": [],
-            "full_text": full_text if len(full_text) > 15 else ex_description # 🌟 新增：傳遞給 Gemini
+            "full_text": final_full_text  # 完美過渡給 main.py
         })
 
     return data
