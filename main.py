@@ -3,7 +3,6 @@ import json
 import math
 import sys
 import re
-from collections import Counter
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +11,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account  
 from crawler import start_crawling
 
+# 強制讓 Python 輸出（stdout）相容雲端環境，避免編碼衝突
 if sys.stdout.encoding != 'utf-8':
     import codecs
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
@@ -40,9 +40,11 @@ class Review(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "雙北展覽 API 伺服器 - 本地文字語意分析完全體"}
+    return {"message": "雙北展覽 API 伺服器 - 定位排序與本地無 AI 摘要完整版"}
 
-# (這裡保持你原本的 get_exhibitions 和 submit_review 路由，完全不變)
+# ==========================================
+# 2. API：取得所有展覽資料 (📍 包含精準定位與自動排序)
+# ==========================================
 @app.get("/api/exhibitions")
 def get_exhibitions(lat: float = None, lon: float = None):
     if db is None: return {"status": "error", "message": "資料庫未連線"}
@@ -52,16 +54,57 @@ def get_exhibitions(lat: float = None, lon: float = None):
         for doc in docs:
             data = doc.to_dict()
             data['id'] = doc.id
-            data['distance'] = 999
-            data['eta_car'] = 999
-            data['eta_moto'] = 999
-            data['eta_transit'] = 999
+            
+            # 如果前端有成功傳入使用者的經緯度
+            if lat is not None and lon is not None and data.get('lat') is not None and data.get('lon') is not None:
+                try:
+                    R = 6371.0 # 地球半徑 (公里)
+                    lat1 = math.radians(lat)
+                    lon1 = math.radians(lon)
+                    lat2 = math.radians(float(data['lat']))
+                    lon2 = math.radians(float(data['lon']))
+                    dlat = lat2 - lat1
+                    dlon = lon2 - lon1
+                    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
+                    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                    
+                    # 算出直線距離後，乘上 1.28 近似真實道路距離
+                    straight_dist = R * c
+                    real_road_dist = straight_dist * 1.28
+                    data['distance'] = round(straight_dist, 2)
+                    
+                    # 依照距離動態計算 ETA (預估抵達時間)
+                    if real_road_dist > 12:
+                        data['eta_car'] = max(5, int(real_road_dist * 1.5 + 8))
+                        data['eta_moto'] = max(4, int(real_road_dist * 2.6 + 4))
+                    else:
+                        data['eta_car'] = max(5, int(real_road_dist * 2.8 + 5))
+                        data['eta_moto'] = max(4, int(real_road_dist * 2.0 + 4))
+                    data['eta_transit'] = max(15, int(real_road_dist * 3.5 + 15))
+                except Exception:
+                    data['distance'] = 999
+            else:
+                # 如果使用者沒開 GPS，距離設為 999，但保留 crawler.py 生成的隨機 ETA 讓畫面不破圖
+                data['distance'] = 999
+                data['eta_car'] = data.get('eta_car', 30)
+                data['eta_moto'] = data.get('eta_moto', 20)
+                data['eta_transit'] = data.get('eta_transit', 45)
+            
             reviews = data.get('reviews', [])
             data['reviews'] = reviews if isinstance(reviews, list) else []
             result.append(data)
+            
+        # 🎯 核心功能：如果使用者有開定位，自動把清單「由近到遠」排序！
+        if lat is not None and lon is not None:
+            result = sorted(result, key=lambda x: x.get('distance', 999))
+            
         return {"status": "success", "data": result}
-    except Exception as e: return {"status": "error", "message": str(e)}
+    except Exception as e: 
+        return {"status": "error", "message": str(e)}
 
+# ==========================================
+# 3. API：提交使用者評論
+# ==========================================
 @app.post("/api/review")
 def submit_review(review: Review):
     if db is None: return {"status": "error", "message": "資料庫未連線"}
@@ -77,65 +120,45 @@ def submit_review(review: Review):
         return {"status": "success", "message": "評論發表成功！"}
     except Exception as e: return {"status": "error", "message": str(e)}
 
-
 # ==========================================
-# 💡 核心演算法：本地文本權重摘要器 (純精準分析)
+# 4. 本地 Python 內文智能提取 (一秒搞定，完全無 AI)
 # ==========================================
-def extract_smart_summary(text, title, location):
-    """ 不靠外來 AI，純靠 Python 統計學演算法，精準抓出長文中的核心重點句 """
+def extract_local_summary(title, location, text):
+    """ 從爬蟲抓到的真實內文，精準切出前 130 字的精華介紹 """
     if not text or len(text.strip()) < 20:
-        return f"歡迎蒞臨參觀【{title}】。本展演活動於「{location}」精心策劃展出，非常適合週末假日前往探索。"
-
-    # 1. 斷句：用驚嘆號、問號、句號將文章切開
-    sentences = re.split(r'[。！？\n]', text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 5]
+        return f"歡迎蒞臨「{location}」親身體驗【{title}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日前往探索！"
     
-    if not sentences:
-        return f"【{title}】將於「{location}」展出，精彩內容歡迎前往現場親身體驗。"
-
-    # 2. 統計詞頻 (簡易型關鍵字權重分析)
-    # 移除常見無意義的贅詞
-    stop_words = {"的", "了", "在", "是", "我", "你", "他", "我們", "展覽", "活動", "可以", "可以", "以及", "與", "及"}
-    words = [w for w in re.findall(r'[\u4e00-\u9fa5]{2,4}', text) if w not in stop_words]
-    word_counts = Counter(words)
+    # 移除多餘的換行與空白字元
+    clean_text = re.sub(r'\s+', ' ', text.strip())
     
-    # 3. 給每個句子打分：如果句子包含越多「高頻關鍵字」，分數就越高
-    sentence_scores = {}
-    for index, sentence in enumerate(sentences):
-        score = 0
-        for word, count in word_counts.items():
-            if word in sentence:
-                score += count
-        # 展覽開頭的句子通常有強烈的導論性質，給予額外加分
-        if index == 0:
-            score *= 1.5
-        sentence_scores[sentence] = score
-
-    # 4. 挑選分數最高的前 2~3 個句子，拼湊成高質感摘要
-    top_sentences = sorted(sentence_scores, key=sentence_scores.get, reverse=True)[:3]
+    # 加入前導句增加專欄質感
+    intro = f"【{title}】於「{location}」展出。內容提要："
     
-    # 依照原本在文章中的順序排列，確保語意通順
-    final_sentences = [s for s in sentences if s in top_sentences]
-    summary_text = "。".join(final_sentences) + "。"
+    # 計算剩餘字數額度 (總長控制在 140 字左右)
+    budget = 135 - len(intro)
     
-    # 5. 格式標準化限制，限制長度在 140 字內
-    if len(summary_text) > 140:
-        summary_text = summary_text[:135] + "..."
-        
-    return f"【{title}】將於「{location}」盛大展出。核心內容精選：{summary_text}"
+    # 如果內文超過額度，切斷並加上刪節號
+    if len(clean_text) > budget:
+        cut_text = clean_text[:budget]
+        last_punct = max(cut_text.rfind('。'), cut_text.rfind('，'), cut_text.rfind('！'))
+        if last_punct > (budget // 2): 
+            summary = cut_text[:last_punct+1] + "..."
+        else:
+            summary = cut_text.strip() + "..."
+    else:
+        summary = clean_text
 
+    return f"{intro} {summary}"
 
-# ------------------------------------------
-# API：觸發爬蟲（1秒全刷完，100% 穩定，天王老子來都限流不了你）
-# ------------------------------------------
+# ==========================================
+# 5. API：觸發爬蟲 (無背景任務，瞬間執行完畢)
+# ==========================================
 @app.get("/api/trigger-crawler")
 def trigger_crawler_and_update_db():
     if db is None: return {"status": "error", "message": "資料庫未連線"}
     try:
-        print("🕸️ 啟動爬蟲模組...")
         new_data = start_crawling() 
-        if not new_data or not isinstance(new_data, list):
-            return {"status": "error", "message": "爬蟲回傳資料為空。"}
+        if not new_data or not isinstance(new_data, list): return {"status": "error", "message": "爬蟲回傳資料為空。"}
             
         active_safe_titles = set()
         new_data_dict = {}
@@ -145,7 +168,7 @@ def trigger_crawler_and_update_db():
                 active_safe_titles.add(safe_title)
                 new_data_dict[safe_title] = ex
 
-        # 同步清除過期舊資料
+        # 清除過期舊資料
         old_docs = db.collection('exhibitions').list_documents()
         batch = db.batch()
         for doc in old_docs:
@@ -160,27 +183,24 @@ def trigger_crawler_and_update_db():
             doc_snap = doc_ref.get()
             
             if doc_snap.exists:
-                existing_data = doc_snap.to_dict()
-                ex['reviews'] = existing_data.get('reviews', [])
-                ex['rating_avg'] = existing_data.get('rating_avg', 0)
+                existing = doc_snap.to_dict()
+                ex['reviews'] = existing.get('reviews', [])
+                ex['rating_avg'] = existing.get('rating_avg', 0)
             else:
                 ex['reviews'] = []
                 ex['rating_avg'] = 0
 
-            # 🎯 執行聰明的本地文字分析摘要
+            # 🔥 呼叫本地切割函數，瞬間完成，不用等 Google API 回應
             raw_context = ex.get('full_text', '')
-            ex['description'] = extract_smart_summary(raw_context, ex['title'], ex['location'])
+            ex['description'] = extract_local_summary(ex['title'], ex['location'], raw_context)
             stats_success += 1
 
-            if 'full_text' in ex:
-                del ex['full_text']
-            
-            # 寫入 Firebase
+            if 'full_text' in ex: del ex['full_text']
             doc_ref.set(ex)
             
         return {
             "status": "success", 
-            "message": f"🎉 滿血通關！已成功利用 Python 本地語意分析演算法，在 0.5 秒內全數完美摘要完 {stats_success} 筆展覽！完全擺脫 Google AI 限制！"
+            "message": f"🎉 爬蟲與摘要更新成功！利用本地程式高速提取了 {stats_success} 筆展覽真實內文，完全擺脫外部 API 限制！"
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
