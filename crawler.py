@@ -162,18 +162,17 @@ def scrape(url):
         parent = title.parent
         for _ in range(3):
             if parent:
-                # 抓圖片
                 if not img_url:
                     img = parent.find("img")
                     if img and img.get("src"):
                         img_url = urljoin(url, img.get("src"))
                 
-                # 🌟 擴大抓取範圍：將節點下的 p, div, span 內文字做深度地毯式搜索
+                # 改良版地毯式內文搜尋
                 if not full_text:
                     text_elements = parent.find_all(["p", "div", "span"])
                     text_chunks = []
                     for el in text_elements:
-                        if not el.find(["p", "div"]):  # 只抓最底層文字，避免重複疊加
+                        if not el.find(["p", "div"]):  
                             txt = el.text.strip()
                             if txt and len(txt) > 6 and not any(fw in txt for fw in FILTER_WORDS):
                                 text_chunks.append(txt)
@@ -194,10 +193,9 @@ def scrape(url):
 
         ex_description = f"歡迎蒞臨「{location}」親身體驗【{clean_name}】的獨特魅力！本展演活動精心策劃，現場結合豐富的展品呈現與知性互動，非常適合週末假日安排行程前往探索！"
 
-        # 🌟 終極修正核心：如果網站上真的沒有多餘文字，不要再給沒養分的罐頭簡介了！
-        # 塞入有意義的「結構化導引線索」，明確指令 Gemini 動用內建大腦直接擴充知識
+        # 🌟 核心突破：如果網頁真的沒內文，直接把「精準導引結構」塞給 full_text 
         if not full_text or len(full_text.strip()) <= 15:
-            final_full_text = f"本展覽為在『{location}』舉辦的『{category}』類型活動，主題聚焦於『{clean_name}』。請主編直接調動你強大的藝文知識庫與最新資料，針對這個展覽主題及其相關背景，直接撰寫一篇高質感的展覽核心亮點與策展大綱摘要導覽。"
+            final_full_text = f"本展覽是在『{location}』舉辦的『{category}』類型展演，展覽名稱主題為『{clean_name}』。請主編依此主題及展出地點，直接展開並深入總結其相關核心看點、策展歷史背景與導覽大綱。"
         else:
             final_full_text = full_text
 
@@ -219,7 +217,7 @@ def scrape(url):
             "eta_transit": random.randint(15, 45),
             "rating_avg": 0,
             "reviews": [],
-            "full_text": final_full_text  # 完美過渡給 main.py
+            "full_text": final_full_text
         })
 
     return data

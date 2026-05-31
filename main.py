@@ -87,7 +87,7 @@ def read_root():
     return {"message": "雙北展覽 API 伺服器正常運作中！2026 旗艦完全體（真實內容 AI 摘要版）"}
 
 # ------------------------------------------
-# API：取得所有展覽資料（雙北老司機擬真交通時間版）
+# API：取得所有展覽資料
 # ------------------------------------------
 @app.get("/api/exhibitions")
 def get_exhibitions(lat: float = None, lon: float = None):
@@ -116,7 +116,6 @@ def get_exhibitions(lat: float = None, lon: float = None):
                     real_road_dist = straight_dist * 1.28
                     data['distance'] = round(straight_dist, 2)
                     
-                    # 雙北國道分流時間計算
                     if real_road_dist > 12:
                         data['eta_car'] = max(5, int(real_road_dist * 1.5 + 8))
                         data['eta_moto'] = max(4, int(real_road_dist * 2.6 + 4))
@@ -179,14 +178,13 @@ def submit_review(review: Review):
         return {"status": "error", "message": str(e)}
 
 # ------------------------------------------
-# API：觸發爬蟲（精準讀取內文、進行深度 AI 摘要）
+# API：觸發爬蟲（強制經由最新引導線索進行 AI 深度摘要）
 # ------------------------------------------
 @app.get("/api/trigger-crawler")
 def trigger_crawler_and_update_db():
     if db is None:
         return {"status": "error", "message": "資料庫未連線"}
     try:
-        # 呼叫上面的爬蟲引擎取得含有 full_text 的陣列
         new_data = start_crawling() 
         
         if not new_data or not isinstance(new_data, list):
@@ -215,47 +213,47 @@ def trigger_crawler_and_update_db():
             doc_ref = db.collection('exhibitions').document(safe_title)
             doc_snap = doc_ref.get()
             
+            # 🔥 關鍵修正：保留既有的使用者星等評論，但「不沿用」舊的罐頭描述，強制用 AI 刷新
             if doc_snap.exists:
                 existing_data = doc_snap.to_dict()
                 ex['reviews'] = existing_data.get('reviews', [])
                 ex['rating_avg'] = existing_data.get('rating_avg', 0)
-                ex['description'] = existing_data.get('description', existing_data.get('description', '暫無摘要'))
             else:
                 ex['reviews'] = []
                 ex['rating_avg'] = 0
                 
-                # 🌟 全新展覽，啟動 Gemini 進行文章內容深度真摘要 🌟
-                if ai_client:
-                    try:
-                        raw_context = ex.get('full_text', '暫無詳細內文描述')
-                        print(f"🤖 AI 正在閱讀文獻並精準摘要：{ex['title']}...")
-                        
-                        prompt_content = f"""
-                        你是一個專業的台灣藝文活動專欄主編。請幫我閱讀下方由爬蟲抓取下來的展覽完整活動網頁內文，將其提煉濃縮成一段 100 到 150 字的「活動資訊頁面精準摘要」。
+            # 🌟 啟動 Gemini 進行文章內容深度真摘要 🌟
+            if ai_client:
+                try:
+                    raw_context = ex.get('full_text', '暫無詳細內文描述')
+                    print(f"🤖 AI 正在閱讀文獻並精準摘要：{ex['title']}...")
+                    
+                    prompt_content = f"""
+                    你是一個專業的台灣藝文活動專欄主編。請幫我閱讀下方由爬蟲抓取下來的展覽活動相關資訊與背景內文，將其提煉濃縮成一段 100 到 150 字的「活動資訊頁面精準摘要」。
 
-                        【展覽基本資訊】
-                        展覽名稱：{ex['title']}
-                        展出地點：{ex['location']}
+                    【展覽基本資訊】
+                    展覽名稱：{ex['title']}
+                    展出地點：{ex['location']}
 
-                        【網頁完整活動內文】
-                        {raw_context}
+                    【活動內文與導引線索】
+                    {raw_context}
 
-                        【摘要生成鐵律】：
-                        1. 必須嚴格、百分之百根據上方提供的【網頁完整活動內文】進行提煉。精準指出這個展覽「到底在展出什麼核心東西」（例如：它的策展大綱、現場劃分哪些重要展區、展出什麼藝術家作品或歷史文物亮點）。絕對不能憑空編造內文裡沒有提過的事情。
-                        2. 格式必須以展覽名稱開頭，並精確點出主辦單位與展出地點。
-                        3. 語氣要沉穩、客觀、高質感、具備導覽性。
-                        4. 直接輸出摘要本文，絕對不要帶有任何標題（例如：不需要『AI摘要：』）、不要星號、不要任何寒暄廢話。
-                        """
-                        
-                        response = ai_client.models.generate_content(
-                            model='gemini-2.5-flash',
-                            contents=prompt_content
-                        )
-                        if response.text:
-                            ex['description'] = response.text.strip()
-                    except Exception as ai_err:
-                        print(f"⚠️ Gemini AI 生成失敗: {str(ai_err)}")
-                        ex['description'] = "展覽內容豐富，歡迎前往現場參觀。"
+                    【摘要生成鐵律】：
+                    1. 必須嚴格根據上方提供的【活動內文與導引線索】進行內容提煉與擴充。請精準指出或依據主題推論這個展覽「到底在展出什麼核心東西」（例如：它的策展大綱、可能包含的藝術風格、核心亮點或歷史文物價值）。如果內文為引導線索，請直接調動你身為主編的藝文知識儲備將其擴寫完整。
+                    2. 格式必須以展覽名稱開頭，並精確點出主辦單位或展出地點。
+                    3. 語氣要沉穩、客觀、高質感、具備導覽性。
+                    4. 直接輸出摘要本文，絕對不要帶有任何標題（例如：不需要『AI摘要：』）、不要星號、不要任何寒暄廢話。
+                    """
+                    
+                    response = ai_client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt_content
+                    )
+                    if response.text:
+                        ex['description'] = response.text.strip()
+                except Exception as ai_err:
+                    print(f"⚠️ Gemini AI 生成失敗: {str(ai_err)}")
+                    ex['description'] = "展覽內容豐富，歡迎前往現場參觀。"
             
             # 寫入 Firebase 前刪除超長原始文字，保持資料庫苗條乾淨
             if 'full_text' in ex:
