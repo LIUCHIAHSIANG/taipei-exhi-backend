@@ -86,7 +86,7 @@ class Review(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "雙北展覽 API 伺服器正常運作中！2026 旗艦完全體（1.5-Flash 每日1500次滿血版）"}
+    return {"message": "雙北展覽 API 伺服器正常運作中！2026 終極防爆版（2.5-Flash 安全限流微調）"}
 
 # ------------------------------------------
 # API：取得所有展覽資料
@@ -180,7 +180,7 @@ def submit_review(review: Review):
         return {"status": "error", "message": str(e)}
 
 # ------------------------------------------
-# API：觸發爬蟲（精準排隊：採用 1.5-Flash 每日 1500 次超高配額模型）
+# API：觸發爬蟲（精準排隊：採用 2.5-Flash 嚴格防超速版）
 # ------------------------------------------
 @app.get("/api/trigger-crawler")
 def trigger_crawler_and_update_db():
@@ -237,12 +237,12 @@ def trigger_crawler_and_update_db():
                 ex['reviews'] = []
                 ex['rating_avg'] = 0
 
-            # 🌟 呼叫 Gemini 核心控制區（切換為 1.5-flash，單次安全處理 8 筆防 Render 逾時）
+            # 🌟 呼叫 Gemini 核心控制區（切換回 2.5-flash，單次安全處理 4 筆，嚴格減速慢行）
             if ai_client and not has_valid_ai_summary:
-                if stats_ai_success < 8: 
+                if stats_ai_success < 4: 
                     try:
                         raw_context = ex.get('full_text', '暫無詳細內文描述')
-                        print(f"🤖 嘗試呼叫 Gemini 1.5-Flash（第 {stats_ai_success+1} 筆）：{ex['title']}...")
+                        print(f"🤖 嘗試呼叫 Gemini 2.5-Flash（第 {stats_ai_success+1} 筆）：{ex['title']}...")
                         
                         prompt_content = f"""
                         你是一個專業的台灣藝文活動專欄主編。請幫我閱讀下方由爬蟲抓取下來的展覽活動相關資訊與背景內文，將其提煉濃縮成一段 100 到 150 字的「活動資訊頁面精準摘要」。
@@ -261,20 +261,20 @@ def trigger_crawler_and_update_db():
                         4. 直接輸出摘要本文，絕對不要帶有任何標題（例如：不需要『AI摘要：』）、不要星號、不要任何寒暄廢話。
                         """
                         
-                        # 🚀 更換模型為每日 1500 次配額的 gemini-1.5-flash
+                        # 🚀 使用最新主流的 gemini-2.5-flash
                         response = ai_client.models.generate_content(
-                            model='gemini-1.5-flash',
+                            model='gemini-2.5-flash',
                             contents=prompt_content
                         )
                         if response.text:
                             ex['description'] = response.text.strip()
                             stats_ai_success += 1
-                            time.sleep(2.0) # 減速慢行遵守 RPM 限制
+                            time.sleep(3.5) # ⚡ 核心關鍵：每筆強制慢速停頓 3.5 秒，絕不踩線 RPM 限制
                         else:
                             raise Exception("Google 回傳了空文本")
                             
                     except Exception as ai_err:
-                        print(f"⚠️ Gemini 1.5 呼叫異常: {str(ai_err)}")
+                        print(f"⚠️ Gemini 2.5 呼叫異常: {str(ai_err)}")
                         stats_ai_fail_429 += 1
                         ex['description'] = "展覽內容豐富，歡迎前往現場參觀。"
                 else:
@@ -289,7 +289,7 @@ def trigger_crawler_and_update_db():
             
         return {
             "status": "success", 
-            "message": f"【1.5-Flash 滿血版報告】本輪成功透過 AI 升級 {stats_ai_success} 筆！",
+            "message": f"【2.5-Flash 終極防爆報告】本輪成功透過 AI 升級 {stats_ai_success} 筆！",
             "dashboard_details": {
                 "已經是完美AI摘要(略過不浪費額度)": stats_already_valid_ai,
                 "本輪成功升級數": stats_ai_success,
